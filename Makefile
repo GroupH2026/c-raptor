@@ -84,3 +84,30 @@ bench:
 
 clean:
 	rm -rf $(BUILD)
+
+# JSONL adapter builds never touch historical self-test objects or parameter stamps.
+BENCH_DIR := $(BUILD)/bench/NOU-$(NOU)-SIGMA-$(SIGMA)-NONCE-$(PARAM_NONCE)
+BENCH_TARGET := $(BENCH_DIR)/raptor-bench
+BENCH_SRCS := $(filter-out test.c,$(SRCS)) bench.c
+BENCH_FLAGS := $(CFLAGS) -DNOU=$(NOU) -DSIGMA=$(SIGMA) -DPARAM_NONCE=$(PARAM_NONCE)
+BENCH_ARGS ?= --suite core --samples 10 --warmup 2 --message-bytes 1024
+BENCH_HEADERS := $(wildcard *.h rng/*.h falcon/*.h)
+
+.PHONY: bench-build bench-json bench-flags-force
+bench-build: $(BENCH_TARGET)
+
+# Update this prerequisite only when compiler/flags actually change.
+$(BENCH_DIR)/flags: bench-flags-force
+	@mkdir -p $(BENCH_DIR)
+	@printf '%s\n' '$(CC) $(BENCH_FLAGS) $(LDFLAGS)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(BENCH_TARGET): $(BENCH_SRCS) $(BENCH_HEADERS) $(BENCH_DIR)/flags
+	@$(CC) $(BENCH_FLAGS) $(BENCH_SRCS) -o $@ $(LDFLAGS) >&2
+
+bench-json: bench-build
+	@./$(BENCH_TARGET) $(BENCH_ARGS)
+
+.PHONY: bench-path
+bench-path:
+	@printf '%s\n' '$(BENCH_TARGET)'
