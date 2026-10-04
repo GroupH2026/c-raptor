@@ -2320,7 +2320,7 @@ falcon_sign_with_u(falcon_sign *fs,   int64_t *u, int64_t *r0, int64_t *r1)
 {
     uint16_t    hm[1024];
     int16_t     s1[1024], s2[1024];
-    int         i;
+    size_t      i, n;
     int64_t     tmp;
 
     if (fs->sk == NULL)
@@ -2332,14 +2332,15 @@ falcon_sign_with_u(falcon_sign *fs,   int64_t *u, int64_t *r0, int64_t *r1)
         return -1;
     }
 
+    n = MKN(fs->logn, fs->ternary);
     shake_flip(&fs->sc);
 
 
-    for (i=0;i<512;i++)
+    for (i=0;i<n;i++)
     {
-        tmp = u[i]%12289;
+        tmp = u[i]%fs->q;
         if (tmp<0)
-            tmp += 12289;
+            tmp += fs->q;
         hm[i] = tmp;
     }
 
@@ -2386,7 +2387,7 @@ falcon_sign_with_u(falcon_sign *fs,   int64_t *u, int64_t *r0, int64_t *r1)
     }
 
 
-    for (i=0;i<512;i++)
+    for (i=0;i<n;i++)
     {
         r0[i] = (int64_t)s1[i];
         r1[i] = (int64_t)s2[i];

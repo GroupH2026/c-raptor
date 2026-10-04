@@ -4,21 +4,34 @@ Raptor signature and Reference Code
 
 This repo now includes a Makefile. On macOS you'll need Homebrew's OpenSSL (`brew install openssl@3`), then:
 
-    make              # build with default params (NOU=50)
+    make              # original Falcon-512 profile, NOU=50
+    make FALCON=1024   # extended Falcon-1024 C baseline, NOU=50
     make run          # build and run the self-test
     make bench        # run at NOU = 5, 10, 20, 50 and print timings
 
-Three params in `param.h` can be overridden without editing the file, e.g. to test a different ring size:
+Select the degree and ring size without editing headers:
 
-    make NOU=10 run
+    make FALCON=512 NOU=10 run
+    make FALCON=1024 NOU=10 run
 
 | Param | Meaning | Default |
 | --- | --- | --- |
+| `FALCON` | degree profile, 512 or 1024 | 512 |
 | `NOU` | ring size (number of users) | 50 |
 | `SIGMA` | Gaussian sampler std dev | 123 |
 | `PARAM_NONCE` | Falcon nonce length | 40 |
 
-`DIM` and `PARAM_Q` are fixed by the vendored Falcon-512 implementation and can't be changed this way.
+`DIM`, Falcon log degree, encoded key/signature capacities, and challenge length
+follow `FALCON`. `PARAM_Q` remains 12289. Self-test objects and binaries live in
+`build/self/FALCON-<degree>-NOU-<ring>-SIGMA-<sigma>-NONCE-<nonce>/`.
+`make` also refreshes `build/raptor` with the selected profile. Switching
+512 to 1024 and back needs no clean.
+
+Falcon-512 retains the original SHA-512 challenge construction. Falcon-1024
+is an extended C baseline: its challenge uses a domain-separated SHAKE256
+expansion, while the Gaussian sampler keeps legacy `SIGMA=123`. This extension
+has no validated 1024 security parameter set and does not establish security
+or protocol equivalence to another implementation.
 
 
 
@@ -44,7 +57,7 @@ Status of this code
   * signature size compression
   * more efficient discrete Gaussian sampler
   * replace Karatsuba with NTT
-  * supporting Falcon-1024
+  * validating the extended Falcon-1024 security parameters
   * removing redundancy
   * strip out NIST wrapper
   * unify the PRNG, XOF, hash, etc
@@ -108,27 +121,31 @@ The Raptor algorithms are covered, to the best of my knowledge, by the following
 JSONL comparison adapter
 ========================
 
-`bench.c` is a separate measurement driver. It leaves the reference
-cryptographic sources and historical `make bench` unchanged. Build each ring
-before measurements, then invoke its binary directly throughout the campaign:
+`bench.c` is a separate measurement driver for either compiled profile.
+Build each degree/ring before measurements, then invoke its binary directly
+throughout the campaign:
 
 ```sh
-make NOU=5 bench-build
-make NOU=10 bench-build
-make NOU=20 bench-build
-make NOU=50 bench-build
-./build/bench/NOU-5-SIGMA-123-NONCE-40/raptor-bench \
+make FALCON=512 NOU=5 bench-build
+make FALCON=1024 NOU=5 bench-build
+./build/bench/FALCON-512-NOU-5-SIGMA-123-NONCE-40/raptor-bench \
   --suite core --falcon 512 --ring-size 5 --samples 100 --warmup 2 \
   --message-bytes 1024 --round 0 > samples.jsonl
 ```
 
 The adapter binary and compiler-flags record live in a directory specific to
-`NOU`, `SIGMA` and `PARAM_NONCE`. Different rings can be built concurrently
-without touching the self-test's objects or parameter stamp. Compiler flag
-changes trigger rebuilding that adapter. Record the `flags` file, source
+`FALCON`, `NOU`, `SIGMA` and `PARAM_NONCE`. Different rings can be built
+concurrently without touching the self-test's objects. Compiler flag changes
+trigger rebuilding that adapter. Use `EXTRA_CFLAGS` for additional compiler
+options, or override `CFLAGS`.
+Required profile defines are appended in both cases. A separate `BUILD` root
+can isolate sanitizer artifacts. `make FALCON=1024 NOU=2 profile-test` checks
+the challenge transcript against OpenSSL, OTS and Raptor roundtrips, and
+changed-message/coefficient rejection. Record the `flags` file, source
 hashes, binary hash and command with results. Use a separate copied artifact
-for an optimisation sensitivity run. Run `python3 test_bench.py` after building
-all four rings to validate JSONL, operation selection and CLI rejection.
+for an optimisation sensitivity run. Run `python3 test_bench.py` to build and
+check both degrees at rings 5, 10, 20 and 50. It checks JSONL, all operations, changed-message rejection, empty
+messages, wrong-profile CLI rejection, and switching builds without cleaning.
 
 `make -s NOU=5 bench-json BENCH_ARGS='--samples 2 --warmup 1'` builds and runs
 the adapter for a smoke test. Direct binary invocation avoids build activity
@@ -136,13 +153,16 @@ in timed campaign jobs. JSONL goes to stdout; legacy cryptographic diagnostic
 prints are redirected to stderr. A failed check exits nonzero without a
 `complete` record, retaining earlier successful samples.
 
-The CLI accepts `--suite core`, `--falcon 512`, `--ring-size` matching compiled
+The CLI accepts `--suite core`, `--falcon 512|1024` matching the compiled
+profile, `--ring-size` matching compiled
 `NOU`, `--samples 1..100000`, `--warmup 0..10000`, `--message-bytes
 0..1048576`, and an unsigned `--round`. `--operation` selects `keygen`,
 `ots-keygen`, `sign`, `verify`, `linkable-sign`, or `linkable-verify`; otherwise
 all six cases run. Defaults are 10 samples, two warmups, 1024 message bytes
-and round zero. Sample indices start at zero after warmup. Each iteration uses
-bytes `32 + ((byte_index + warmup + sample_index) % 95)`.
+and round zero. Omitting `--falcon` uses the compiled degree. The config
+record identifies the profile, challenge construction and sigma; each sample
+records the compiled degree. Sample indices start at zero after warmup.
+Each iteration uses bytes `32 + ((byte_index + warmup + sample_index) % 95)`.
 
 Timing uses monotonic wall-clock nanoseconds. The driver seeds the C DRBG from
 48 bytes of OpenSSL OS entropy once per process, generates real independent
@@ -166,7 +186,7 @@ and key generation. Linkable cases report the returned OTS signed-message
 blob length. This is not a complete ring signature encoding: verification
 also receives external Raptor data and public parameters.
 
-The unchanged baseline has a known linkable buffer-construction defect. The
+Both C profiles retain a known linkable buffer-construction defect. The
 copies of `d`, `r0`, `r1` and `h` overlap at byte offsets `base`, `base+1`,
 `base+2` and `base+3`, rather than separate polynomial strides. Signing and
 verification repeat the same construction, so round trips can succeed while

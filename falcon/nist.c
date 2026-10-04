@@ -8,9 +8,9 @@
 #include "api.h"
 #include "falcon.h"
 
-#define PARAM_LOGN      9
+#define PARAM_LOGN      RAPTOR_LOGN
 #define PARAM_TERNARY   0
-#define PARAM_NONCE     40
+#define FALCON_NONCE_BYTES 40
 
 void randombytes_init(unsigned char *entropy_input,
 	unsigned char *personalization_string,
@@ -48,8 +48,8 @@ crypto_sign(unsigned char *sm, unsigned long long *smlen,
 {
 	falcon_sign *fs;
 	unsigned char seed[48];
-	unsigned char nonce[PARAM_NONCE];
-	unsigned char sig[CRYPTO_BYTES - 2 - PARAM_NONCE];
+	unsigned char nonce[FALCON_NONCE_BYTES];
+	unsigned char sig[CRYPTO_BYTES - 2 - FALCON_NONCE_BYTES];
 	size_t sig_len, off;
 	int r;
 
@@ -126,17 +126,17 @@ crypto_sign_open(unsigned char *m, unsigned long long *mlen,
 	if (!falcon_vrfy_set_public_key(fv, pk, CRYPTO_PUBLICKEYBYTES)) {
 		goto exit_crypto_sign_open;
 	}
-	if (smlen < (2 + PARAM_NONCE)) {
+	if (smlen < (2 + FALCON_NONCE_BYTES)) {
 		goto exit_crypto_sign_open;
 	}
 	sig_len = ((size_t)sm[0] << 8) + sm[1];
-	if (sig_len > (smlen - (2 + PARAM_NONCE))) {
+	if (sig_len > (smlen - (2 + FALCON_NONCE_BYTES))) {
 		goto exit_crypto_sign_open;
 	}
-	msg = sm + 2 + PARAM_NONCE;
-	msg_len = smlen - (2 + PARAM_NONCE) - sig_len;
+	msg = sm + 2 + FALCON_NONCE_BYTES;
+	msg_len = smlen - (2 + FALCON_NONCE_BYTES) - sig_len;
 	sig = msg + msg_len;
-	falcon_vrfy_start(fv, sm + 2, PARAM_NONCE);
+	falcon_vrfy_start(fv, sm + 2, FALCON_NONCE_BYTES);
 	falcon_vrfy_update(fv, msg, msg_len);
 	if (falcon_vrfy_verify(fv, sig, sig_len) > 0) {
 		r = 0;

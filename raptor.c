@@ -23,19 +23,21 @@ raptor_sign(
     int64_t             *H)
 {
     int             i,j;
+    int             result = -1;
+    falcon_sign     *fs = NULL;
     int64_t         *tmp1, *tmp2, *u;
-    char            tmpchar;
+    unsigned char   tmpchar;
     unsigned char   *seed;
     unsigned char   *hashdig;
     tmp1    = malloc(sizeof(int64_t)*DIM);
     tmp2    = malloc(sizeof(int64_t)*DIM);
     u       = malloc(sizeof(int64_t)*DIM);
-    hashdig = malloc(64);
+    hashdig = malloc(RAPTOR_CHALLENGE_BYTES);
     seed    = malloc(SEEDLEN);
-    if(!seed)
+    if(!tmp1 || !tmp2 || !u || !hashdig || !seed)
     {
         printf("memory error\n");
-        return -1;
+        goto cleanup;
     }
 
     /*
@@ -70,7 +72,7 @@ raptor_sign(
     form_digest( msg, msg_len, data, hashdig);
 
     /* use u to temporarily store hash(c1,..., ck, m)*/
-    for (i=0;i<64;i++)
+    for (i=0;i<RAPTOR_CHALLENGE_BYTES;i++)
     {
         tmpchar = hashdig[i];
         for (j=0;j<8;j++)
@@ -102,11 +104,10 @@ raptor_sign(
 
     /* sign on u to get r0_\pi and r1_\pi*/
     unsigned char   nonce[PARAM_NONCE];
-    falcon_sign     *fs;
     fs = falcon_sign_new();
     if (fs == NULL)
     {
-        return -1;
+        goto cleanup;
     }
     randombytes(seed, SEEDLEN);
     falcon_sign_set_seed(fs, seed, SEEDLEN, 1);
@@ -114,21 +115,23 @@ raptor_sign(
 
     if (!falcon_sign_set_private_key(fs, sk, CRYPTO_SECRETKEYBYTES))
     {
-        return -1;
+        goto cleanup;
     }
     if (!falcon_sign_start(fs, nonce))
     {
-        return -1;
+        goto cleanup;
     }
 
 
     if(falcon_sign_with_u(fs, u, data[NOU-1].r0, data[NOU-1].r1)!=0)
     {
         printf("falcon sign failed\n");
-        return -1;
+        goto cleanup;
     }
 
 
+    result = 0;
+cleanup:
     falcon_sign_free(fs);
     free (tmp1);
     free (tmp2);
@@ -140,7 +143,7 @@ raptor_sign(
  *  printf("horrey, signature is done!\n");
  */
 
-    return 0;
+    return result;
 }
 
 
@@ -214,7 +217,22 @@ void form_digest(
         ptr2 = data[i].c;
         memcpy(ptr1+i*DIM,ptr2, sizeof(int64_t)*DIM);
     }
+#if RAPTOR_FALCON_DEGREE == 512
+    /* Preserve the original 512 transcript byte for byte. */
     crypto_hash_sha512(out, hashbuf, sizeof(int64_t)*NOU*DIM + msg_len);
+#else
+    /* SHAKE256(domain || msg || c[0] || ... || c[NOU-1]). Domain excludes
+     * its terminating NUL. Commitments retain the legacy native int64
+     * representation. Extract 128 bytes, unpacked least-significant bit
+     * first, to define all 1024 challenge coefficients. */
+    shake_context sc;
+    static const char domain[] = RAPTOR_CHALLENGE_DOMAIN;
+    shake_init(&sc, 512);
+    shake_inject(&sc, domain, sizeof domain - 1);
+    shake_inject(&sc, hashbuf, sizeof(int64_t)*NOU*DIM + msg_len);
+    shake_flip(&sc);
+    shake_extract(&sc, out, RAPTOR_CHALLENGE_BYTES);
+#endif
 
     free(hashbuf);
     return;
@@ -228,14 +246,18 @@ raptor_verify(
     int64_t             *H)
 {
     int i,j;
+    int result = -1;
 
     int64_t         *tmp1, *tmp2, *d, *drec;
 
-    char            tmpchar;
+    unsigned char   tmpchar;
     unsigned char   *hashdig;
     tmp1    = malloc(sizeof(int64_t)*DIM);
     tmp2    = malloc(sizeof(int64_t)*DIM);
-    hashdig = malloc(64);
+    hashdig = malloc(RAPTOR_CHALLENGE_BYTES);
+
+    if (!tmp1 || !tmp2 || !hashdig)
+        goto cleanup;
 
     d       = tmp1;
     drec    = tmp2;
@@ -252,7 +274,7 @@ raptor_verify(
             if (tmp1[j]!=0)
             {
                 printf("error\n");
-                return -1;
+                goto cleanup;
             }
         }
     }
@@ -265,7 +287,7 @@ raptor_verify(
     form_digest(msg, msg_len, data, hashdig);
 
     /* use u to temporarily store hash(c1,..., ck, m)*/
-    for (i=0;i<64;i++)
+    for (i=0;i<RAPTOR_CHALLENGE_BYTES;i++)
     {
         tmpchar = hashdig[i];
         for (j=0;j<8;j++)
@@ -288,18 +310,20 @@ raptor_verify(
         if ((drec[j]&1)!=d[j])
         {
             printf("error\n");
-            return -1;
+            goto cleanup;
         }
     }
 
 
+    result = 0;
+cleanup:
     free(tmp1);
     free(tmp2);
     free(hashdig);
 /*
  *  printf("horrey, verification is done!\n");
  */
-    return 0;
+    return result;
 }
 
 void
@@ -378,7 +402,7 @@ extract_pkey(
 
 
     h16 = malloc(sizeof(uint16_t)*DIM);
-    falcon_decode_12289(h16, 9,falcon_pk+1, CRYPTO_PUBLICKEYBYTES-1);
+    falcon_decode_12289(h16, RAPTOR_LOGN,falcon_pk+1, CRYPTO_PUBLICKEYBYTES-1);
     for (i=0;i<DIM;i++)
         h[i] = (int64_t) h16[i];
     free (h16);

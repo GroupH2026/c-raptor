@@ -4,18 +4,23 @@
 # Usage:
 #   make                    build with default params (NOU=50)
 #   make NOU=10             build with a different ring size
+#   make FALCON=1024        build extended Falcon-1024 C baseline
 #   make run                build (if needed) and run the self-test
 #   make run NOU=10         same, with an overridden ring size
 #   make bench              build+run across a sweep of ring sizes
 #   make clean              remove build artifacts
 #
-# Only NOU, SIGMA and PARAM_NONCE are safe to override this way - see
-# param.h for why DIM and PARAM_Q are not exposed here.
+# FALCON selects a complete degree profile; PARAM_Q remains fixed.
 
 CC      ?= cc
 BUILD   := build
-TARGET  := $(BUILD)/raptor
 
+FALCON      ?= 512
+ifneq ($(FALCON),512)
+ifneq ($(FALCON),1024)
+$(error FALCON must be 512 or 1024)
+endif
+endif
 NOU         ?= 50
 SIGMA       ?= 123
 PARAM_NONCE ?= 40
@@ -37,8 +42,10 @@ ifeq ($(strip $(OPENSSL_PREFIX)),)
 $(error Could not find OpenSSL. macOS: brew install openssl@3   Arch: sudo pacman -S openssl   (or pass OPENSSL_PREFIX=/path/to/openssl))
 endif
 
-CFLAGS  := -O2 -Wall -I$(OPENSSL_PREFIX)/include \
-           -DNOU=$(NOU) -DSIGMA=$(SIGMA) -DPARAM_NONCE=$(PARAM_NONCE)
+CFLAGS  := -O2 -Wall
+PROFILE_FLAGS := -I$(OPENSSL_PREFIX)/include -DRAPTOR_FALCON_DEGREE=$(FALCON) \
+                 -DNOU=$(NOU) -DSIGMA=$(SIGMA) -DPARAM_NONCE=$(PARAM_NONCE)
+COMPILE_FLAGS := $(CPPFLAGS) $(CFLAGS) $(EXTRA_CFLAGS) $(PROFILE_FLAGS)
 LDFLAGS := -L$(OPENSSL_PREFIX)/lib -lcrypto -lm
 
 SRCS := raptor.c linkable_raptor.c poly.c print.c test.c \
@@ -47,29 +54,30 @@ SRCS := raptor.c linkable_raptor.c poly.c print.c test.c \
         falcon/falcon-keygen.c falcon/falcon-sign.c falcon/falcon-vrfy.c \
         falcon/frng.c falcon/nist.c falcon/shake.c
 
-OBJS  := $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
-STAMP := $(BUILD)/.params_$(NOU)_$(SIGMA)_$(PARAM_NONCE)
+PROFILE_DIR := FALCON-$(FALCON)-NOU-$(NOU)-SIGMA-$(SIGMA)-NONCE-$(PARAM_NONCE)
+SELF_DIR := $(BUILD)/self/$(PROFILE_DIR)
+TARGET := $(SELF_DIR)/raptor
+OBJS := $(addprefix $(SELF_DIR)/,$(SRCS:.c=.o))
+HEADERS := $(wildcard *.h rng/*.h falcon/*.h)
 
-vpath %.c . rng falcon
+.PHONY: all run bench clean flags-force
 
-.PHONY: all run bench clean
-
+# Preserve the historical executable path for callers. Always refresh it when
+# selecting a cached profile, including switches back to an older build.
 all: $(TARGET)
+	@cp $(TARGET) $(BUILD)/raptor
 
-# Object files don't encode which param values they were built with, so
-# if NOU/SIGMA/PARAM_NONCE changed since the last build, wipe stale
-# objects before compiling - otherwise `make` would silently reuse
-# objects built with the old params and give you misleading numbers.
-$(STAMP):
-	@mkdir -p $(BUILD)
-	@rm -f $(BUILD)/*.o $(BUILD)/.params_*
-	@touch $@
+$(SELF_DIR)/flags: flags-force
+	@mkdir -p $(SELF_DIR)
+	@printf '%s\n' '$(CC) $(COMPILE_FLAGS) $(LDFLAGS)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
-$(TARGET): $(STAMP) $(OBJS)
-	$(CC) -o $@ $(OBJS) $(LDFLAGS)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
-$(BUILD)/%.o: %.c | $(STAMP)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(SELF_DIR)/%.o: %.c $(HEADERS) $(SELF_DIR)/flags
+	@mkdir -p $(@D)
+	$(CC) $(COMPILE_FLAGS) -c $< -o $@
 
 run: all
 	./$(TARGET)
@@ -85,12 +93,12 @@ bench:
 clean:
 	rm -rf $(BUILD)
 
-# JSONL adapter builds never touch historical self-test objects or parameter stamps.
-BENCH_DIR := $(BUILD)/bench/NOU-$(NOU)-SIGMA-$(SIGMA)-NONCE-$(PARAM_NONCE)
+# JSONL adapter builds use separate profile directories from the self-test.
+BENCH_DIR := $(BUILD)/bench/$(PROFILE_DIR)
 BENCH_TARGET := $(BENCH_DIR)/raptor-bench
 BENCH_SRCS := $(filter-out test.c,$(SRCS)) bench.c
-BENCH_FLAGS := $(CFLAGS) -DNOU=$(NOU) -DSIGMA=$(SIGMA) -DPARAM_NONCE=$(PARAM_NONCE)
-BENCH_ARGS ?= --suite core --samples 10 --warmup 2 --message-bytes 1024
+BENCH_FLAGS := $(COMPILE_FLAGS)
+BENCH_ARGS ?= --suite core --falcon $(FALCON) --samples 10 --warmup 2 --message-bytes 1024
 BENCH_HEADERS := $(wildcard *.h rng/*.h falcon/*.h)
 
 .PHONY: bench-build bench-json bench-flags-force
@@ -111,3 +119,11 @@ bench-json: bench-build
 .PHONY: bench-path
 bench-path:
 	@printf '%s\n' '$(BENCH_TARGET)'
+
+PROFILE_TEST_TARGET := $(SELF_DIR)/profile-test
+.PHONY: profile-test
+$(PROFILE_TEST_TARGET): $(filter-out test.c,$(SRCS)) test_profile.c $(HEADERS) $(SELF_DIR)/flags
+	$(CC) $(COMPILE_FLAGS) $(filter-out test.c,$(SRCS)) test_profile.c -o $@ $(LDFLAGS)
+
+profile-test: $(PROFILE_TEST_TARGET)
+	./$(PROFILE_TEST_TARGET)

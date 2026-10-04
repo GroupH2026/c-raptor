@@ -7,7 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Adapter only: the reference cryptographic sources are unchanged. */
+/* Measurement adapter for the compiled C profile. */
 static FILE *records;
 static size_t samples = 10, warmup = 2, message_bytes = 1024, round_id;
 static const char *operation;
@@ -33,7 +33,7 @@ static size_t number(const char *s) {
 static int selected(const char *name) { return !operation || strcmp(operation, name) == 0; }
 static void row(const char *name, size_t iteration, uint64_t elapsed, int bytes) {
     if (iteration < warmup || !selected(name)) return;
-    fprintf(records, "{\"type\":\"sample\",\"schema_version\":1,\"suite\":\"core\",\"case\":\"%s\",\"implementation\":\"c-raptor\",\"falcon\":512,\"ring_size\":%d,\"message_bytes\":%zu,\"round\":%zu,\"sample\":%zu,\"elapsed_ns\":%" PRIu64 ",\"output_bytes\":", name, NOU, message_bytes, round_id, iteration-warmup, elapsed);
+    fprintf(records, "{\"type\":\"sample\",\"schema_version\":1,\"suite\":\"core\",\"case\":\"%s\",\"implementation\":\"c-raptor\",\"falcon\":%d,\"ring_size\":%d,\"message_bytes\":%zu,\"round\":%zu,\"sample\":%zu,\"elapsed_ns\":%" PRIu64 ",\"output_bytes\":", name, RAPTOR_FALCON_DEGREE, NOU, message_bytes, round_id, iteration-warmup, elapsed);
     if (bytes < 0) fputs("null", records); else fprintf(records, "%d", bytes);
     fputs(",\"phases\":[],\"verified\":true}\n", records);
     require(!ferror(records) && fflush(records) == 0, "sample output");
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     for (int arg = 1; arg < argc; arg++) {
         const char *key = argv[arg], *value;
         if (!strcmp(key, "--help")) {
-            puts("Usage: raptor-bench [--suite core] [--falcon 512] [--ring-size compiled-NOU] [--samples 1..100000] [--warmup 0..10000] [--message-bytes 0..1048576] [--round N] [--operation keygen|ots-keygen|sign|verify|linkable-sign|linkable-verify]"); return 0;
+            puts("Usage: raptor-bench [--suite core] [--falcon compiled-512-or-1024] [--ring-size compiled-NOU] [--samples 1..100000] [--warmup 0..10000] [--message-bytes 0..1048576] [--round N] [--operation keygen|ots-keygen|sign|verify|linkable-sign|linkable-verify]"); return 0;
         }
         require(arg + 1 < argc, "option needs a value"); value = argv[++arg];
         if (!strcmp(key, "--samples")) samples = number(value);
@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(key, "--message-bytes")) message_bytes = number(value);
         else if (!strcmp(key, "--round")) round_id = number(value);
         else if (!strcmp(key, "--suite")) require(!strcmp(value, "core"), "suite must be core");
-        else if (!strcmp(key, "--falcon")) require(number(value) == 512, "only Falcon-512 supported");
+        else if (!strcmp(key, "--falcon")) require(number(value) == RAPTOR_FALCON_DEGREE, "falcon must match compiled profile");
         else if (!strcmp(key, "--ring-size")) require(number(value) == NOU, "ring-size must match compiled NOU");
         else if (!strcmp(key, "--operation")) operation = value;
         else require(0, "unknown option");
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
     out_fd = dup(STDOUT_FILENO); require(out_fd >= 0, "duplicate stdout");
     require(dup2(STDERR_FILENO, STDOUT_FILENO) >= 0, "redirect legacy diagnostics");
     records = fdopen(out_fd, "w"); require(records != NULL, "JSONL stream");
-    fprintf(records, "{\"type\":\"config\",\"schema_version\":1,\"implementation\":\"c-raptor\",\"options\":{\"suite\":\"core\",\"falcon\":512,\"ring_size\":%d,\"message_bytes\":%zu,\"samples\":%zu,\"warmup\":%zu,\"round\":%zu},\"clock\":\"CLOCK_MONOTONIC\",\"fixture\":\"independent real ring keys; signer last; per-iteration message\",\"rng\":\"OS-seeded AES256 CTR DRBG\",\"allocation_scope\":\"caller buffers reused; internal API allocations included\",\"linkable_setup\":\"basic Raptor keys plus separate Falcon OTS keypair\",\"output_bytes_scope\":\"null except returned OTS signed-message blob; not complete ring encoding\",\"limitations\":[\"baseline linkable buffer fields overlap at byte offsets +1,+2,+3\",\"linkable API ignores internal signing return codes; adapter validates length and roundtrip\",\"C OTS construction differs from PQLRS linking and Bulletproof binding\"]}\n", NOU, message_bytes, samples, warmup, round_id);
+    fprintf(records, "{\"type\":\"config\",\"schema_version\":1,\"implementation\":\"c-raptor\",\"options\":{\"suite\":\"core\",\"falcon\":%d,\"ring_size\":%d,\"message_bytes\":%zu,\"samples\":%zu,\"warmup\":%zu,\"round\":%zu},\"profile\":\"%s\",\"challenge\":\"%s\",\"sigma\":%d,\"clock\":\"CLOCK_MONOTONIC\",\"fixture\":\"independent real ring keys; signer last; per-iteration message\",\"rng\":\"OS-seeded AES256 CTR DRBG\",\"allocation_scope\":\"caller buffers reused; internal API allocations included\",\"linkable_setup\":\"basic Raptor keys plus separate Falcon OTS keypair\",\"output_bytes_scope\":\"null except returned OTS signed-message blob; not complete ring encoding\",\"limitations\":[\"baseline linkable buffer fields overlap at byte offsets +1,+2,+3\",\"linkable API ignores internal signing return codes; adapter validates length and roundtrip\",\"C OTS construction differs from PQLRS linking and Bulletproof binding\"]}\n", RAPTOR_FALCON_DEGREE, NOU, message_bytes, samples, warmup, round_id, RAPTOR_PROFILE_NAME, RAPTOR_CHALLENGE_NAME, SIGMA);
     require(fflush(records) == 0, "config output");
     require(RAND_bytes(entropy, sizeof entropy) == 1, "OS entropy");
     randombytes_init(entropy, NULL, 256); memset(entropy, 0, sizeof entropy);
