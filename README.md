@@ -158,7 +158,10 @@ profile, `--ring-size` matching compiled
 `NOU`, `--samples 1..100000`, `--warmup 0..10000`, `--message-bytes
 0..1048576`, and an unsigned `--round`. `--operation` selects `keygen`,
 `ots-keygen`, `sign`, `verify`, `linkable-sign`, or `linkable-verify`; otherwise
-all six cases run. Defaults are 10 samples, two warmups, 1024 message bytes
+all six cases run. `--operation basic` runs only Raptor `keygen`, `sign` and
+`verify`, skips all OTS/linkable fixtures and checks, and emits
+`core_basic_only: true` in the config record. Defaults are 10 samples, two
+warmups, 1024 message bytes
 and round zero. Omitting `--falcon` uses the compiled degree. The config
 record identifies the profile, challenge construction and sigma; each sample
 records the compiled degree. Sample indices start at zero after warmup.

@@ -28,10 +28,11 @@ def validate(degree, ring, operation=None, message_bytes=1024, sample_count=1, w
     assert config["type"] == "config"
     assert config["options"] == {"suite": "core", "falcon": degree, "ring_size": ring, "message_bytes": message_bytes, "samples": sample_count, "warmup": warmup_count, "round": 3}
     assert config["sigma"] == 123
+    assert config["core_basic_only"] is (operation == "basic")
     assert config["profile"] and config["challenge"].startswith("sha512" if degree == 512 else "shake256")
     assert len(config["limitations"]) >= 3
     rows = records[1:-1]
-    expected_cases = {operation} if operation else CASES
+    expected_cases = {"keygen", "sign", "verify"} if operation == "basic" else ({operation} if operation else CASES)
     assert len(rows) == sample_count * len(expected_cases)
     for case in expected_cases:
         assert [row["sample"] for row in rows if row["case"] == case] == list(range(sample_count))
@@ -51,7 +52,7 @@ def validate(degree, ring, operation=None, message_bytes=1024, sample_count=1, w
             assert row["output_bytes"] is None
     assert records[-1] == {"type": "complete", "schema_version": 1, "samples": len(rows), "verified": True}
     # Emitting complete also proves the driver's preflight accepted both signature
-    # roundtrips and rejected a changed message in each construction.
+    # roundtrips and rejected a changed message in each requested construction.
     return config
 
 
@@ -88,6 +89,8 @@ if __name__ == "__main__":
             build(degree, ring)
             profiles[degree] = validate(degree, ring, sample_count=2 if ring == 5 else 1, warmup_count=1 if ring == 5 else 0)
             print(f"Falcon-{degree}, ring {ring}: JSONL, roundtrips and changed-message rejection passed", flush=True)
+        validate(degree, 5, operation="basic", sample_count=2, warmup_count=1)
+        validate(degree, 5, operation="basic", message_bytes=0)
         validate_rejection(degree)
         for case in sorted(CASES):
             validate(degree, 5, operation=case, message_bytes=0)

@@ -30,7 +30,11 @@ static size_t number(const char *s) {
     require(!errno && !*end && n <= SIZE_MAX, "invalid numeric option");
     return (size_t)n;
 }
-static int selected(const char *name) { return !operation || strcmp(operation, name) == 0; }
+static int basic_only(void) { return operation && strcmp(operation, "basic") == 0; }
+static int selected(const char *name) {
+    if (basic_only()) return !strcmp(name, "keygen") || !strcmp(name, "sign") || !strcmp(name, "verify");
+    return !operation || strcmp(operation, name) == 0;
+}
 static void row(const char *name, size_t iteration, uint64_t elapsed, int bytes) {
     if (iteration < warmup || !selected(name)) return;
     fprintf(records, "{\"type\":\"sample\",\"schema_version\":1,\"suite\":\"core\",\"case\":\"%s\",\"implementation\":\"c-raptor\",\"falcon\":%d,\"ring_size\":%d,\"message_bytes\":%zu,\"round\":%zu,\"sample\":%zu,\"elapsed_ns\":%" PRIu64 ",\"output_bytes\":", name, RAPTOR_FALCON_DEGREE, NOU, message_bytes, round_id, iteration-warmup, elapsed);
@@ -63,7 +67,7 @@ int main(int argc, char **argv) {
     for (int arg = 1; arg < argc; arg++) {
         const char *key = argv[arg], *value;
         if (!strcmp(key, "--help")) {
-            puts("Usage: raptor-bench [--suite core] [--falcon compiled-512-or-1024] [--ring-size compiled-NOU] [--samples 1..100000] [--warmup 0..10000] [--message-bytes 0..1048576] [--round N] [--operation keygen|ots-keygen|sign|verify|linkable-sign|linkable-verify]"); return 0;
+            puts("Usage: raptor-bench [--suite core] [--falcon compiled-512-or-1024] [--ring-size compiled-NOU] [--samples 1..100000] [--warmup 0..10000] [--message-bytes 0..1048576] [--round N] [--operation basic|keygen|ots-keygen|sign|verify|linkable-sign|linkable-verify]"); return 0;
         }
         require(arg + 1 < argc, "option needs a value"); value = argv[++arg];
         if (!strcmp(key, "--samples")) samples = number(value);
@@ -79,7 +83,7 @@ int main(int argc, char **argv) {
     require(samples >= 1 && samples <= 100000 && warmup <= 10000 && message_bytes <= 1048576, "request outside sample/warmup/message bounds");
     require(NOU >= 3 && NOU <= 128 && capacity <= INT_MAX, "compiled ring outside supported limits");
     if (operation) {
-        int found = 0;
+        int found = basic_only();
         for (i = 0; i < sizeof cases / sizeof cases[0]; i++) found |= !strcmp(operation, cases[i]);
         require(found, "unknown operation");
     }
@@ -87,7 +91,7 @@ int main(int argc, char **argv) {
     out_fd = dup(STDOUT_FILENO); require(out_fd >= 0, "duplicate stdout");
     require(dup2(STDERR_FILENO, STDOUT_FILENO) >= 0, "redirect legacy diagnostics");
     records = fdopen(out_fd, "w"); require(records != NULL, "JSONL stream");
-    fprintf(records, "{\"type\":\"config\",\"schema_version\":1,\"implementation\":\"c-raptor\",\"options\":{\"suite\":\"core\",\"falcon\":%d,\"ring_size\":%d,\"message_bytes\":%zu,\"samples\":%zu,\"warmup\":%zu,\"round\":%zu},\"profile\":\"%s\",\"challenge\":\"%s\",\"sigma\":%d,\"clock\":\"CLOCK_MONOTONIC\",\"fixture\":\"independent real ring keys; signer last; per-iteration message\",\"rng\":\"OS-seeded AES256 CTR DRBG\",\"allocation_scope\":\"caller buffers reused; internal API allocations included\",\"linkable_setup\":\"basic Raptor keys plus separate Falcon OTS keypair\",\"output_bytes_scope\":\"null except returned OTS signed-message blob; not complete ring encoding\",\"limitations\":[\"baseline linkable buffer fields overlap at byte offsets +1,+2,+3\",\"linkable API ignores internal signing return codes; adapter validates length and roundtrip\",\"C OTS construction differs from PQLRS linking and Bulletproof binding\"]}\n", RAPTOR_FALCON_DEGREE, NOU, message_bytes, samples, warmup, round_id, RAPTOR_PROFILE_NAME, RAPTOR_CHALLENGE_NAME, SIGMA);
+    fprintf(records, "{\"type\":\"config\",\"schema_version\":1,\"implementation\":\"c-raptor\",\"options\":{\"suite\":\"core\",\"falcon\":%d,\"ring_size\":%d,\"message_bytes\":%zu,\"samples\":%zu,\"warmup\":%zu,\"round\":%zu},\"profile\":\"%s\",\"challenge\":\"%s\",\"sigma\":%d,\"core_basic_only\":%s,\"clock\":\"CLOCK_MONOTONIC\",\"fixture\":\"independent real ring keys; signer last; per-iteration message\",\"rng\":\"OS-seeded AES256 CTR DRBG\",\"allocation_scope\":\"caller buffers reused; internal API allocations included\",\"linkable_setup\":\"basic Raptor keys plus separate Falcon OTS keypair\",\"output_bytes_scope\":\"null except returned OTS signed-message blob; not complete ring encoding\",\"limitations\":[\"baseline linkable buffer fields overlap at byte offsets +1,+2,+3\",\"linkable API ignores internal signing return codes; adapter validates length and roundtrip\",\"C OTS construction differs from PQLRS linking and Bulletproof binding\"]}\n", RAPTOR_FALCON_DEGREE, NOU, message_bytes, samples, warmup, round_id, RAPTOR_PROFILE_NAME, RAPTOR_CHALLENGE_NAME, SIGMA, basic_only() ? "true" : "false");
     require(fflush(records) == 0, "config output");
     require(RAND_bytes(entropy, sizeof entropy) == 1, "OS entropy");
     randombytes_init(entropy, NULL, 256); memset(entropy, 0, sizeof entropy);
@@ -95,20 +99,26 @@ int main(int argc, char **argv) {
     require(randombytes(seed, sizeof seed) == RNG_SUCCESS, "public parameter randomness");
     pol_unidrnd_with_seed(H, DIM, PARAM_Q, seed, sizeof seed);
     sk = allocate(CRYPTO_SECRETKEYBYTES); discard_sk = allocate(CRYPTO_SECRETKEYBYTES);
-    ots_sk = allocate(CRYPTO_SECRETKEYBYTES); ots_pk = allocate(CRYPTO_PUBLICKEYBYTES);
-    ots_sm = allocate(capacity); message = allocate(message_bytes); changed = allocate(message_bytes + 1);
+    ots_sk = ots_pk = ots_sm = NULL;
+    if (!basic_only()) {
+        ots_sk = allocate(CRYPTO_SECRETKEYBYTES); ots_pk = allocate(CRYPTO_PUBLICKEYBYTES);
+        ots_sm = allocate(capacity);
+    }
+    message = allocate(message_bytes); changed = allocate(message_bytes + 1);
     for (i = 0; i < NOU; i++) {
         data[i].c = allocate(sizeof(int64_t)*DIM); data[i].d = allocate(sizeof(int64_t)*DIM);
         data[i].h = allocate(sizeof(int64_t)*DIM); data[i].r0 = allocate(sizeof(int64_t)*DIM); data[i].r1 = allocate(sizeof(int64_t)*DIM);
         require(raptor_keygen(data[i], i == NOU-1 ? sk : discard_sk) == 0, "real ring member keygen");
     }
-    require(crypto_sign_keypair(ots_pk, ots_sk) == 0, "initial OTS keygen");
+    if (!basic_only()) require(crypto_sign_keypair(ots_pk, ots_sk) == 0, "initial OTS keygen");
     require(raptor_sign(message, message_bytes, data, sk, H) == 0 && raptor_verify(message, message_bytes, data, H) == 0, "basic preflight roundtrip");
     memcpy(changed, message, message_bytes); changed[message_bytes] = 1;
     require(raptor_verify(changed, message_bytes + 1, data, H) != 0, "basic changed-message rejection");
-    length = linkable_raptor_sign(message, message_bytes, data, sk, H, ots_pk, ots_sk, ots_sm);
-    require(length > 0 && (size_t)length <= capacity && linkable_raptor_verify(message, message_bytes, data, H, ots_pk, ots_sm, length) == 0, "linkable preflight roundtrip");
-    require(linkable_raptor_verify(changed, message_bytes + 1, data, H, ots_pk, ots_sm, length) != 0, "linkable changed-message rejection");
+    if (!basic_only()) {
+        length = linkable_raptor_sign(message, message_bytes, data, sk, H, ots_pk, ots_sk, ots_sm);
+        require(length > 0 && (size_t)length <= capacity && linkable_raptor_verify(message, message_bytes, data, H, ots_pk, ots_sm, length) == 0, "linkable preflight roundtrip");
+        require(linkable_raptor_verify(changed, message_bytes + 1, data, H, ots_pk, ots_sm, length) != 0, "linkable changed-message rejection");
+    }
     for (iteration = 0; iteration < warmup + samples; iteration++) {
         for (i = 0; i < message_bytes; i++) message[i] = 32 + ((i + iteration) % 95);
         if (selected("keygen")) {
@@ -142,7 +152,7 @@ int main(int argc, char **argv) {
     }
     fprintf(records, "{\"type\":\"complete\",\"schema_version\":1,\"samples\":%zu,\"verified\":true}\n", emitted);
     require(fclose(records) == 0, "complete output");
-    memset(sk, 0, CRYPTO_SECRETKEYBYTES); memset(discard_sk, 0, CRYPTO_SECRETKEYBYTES); memset(ots_sk, 0, CRYPTO_SECRETKEYBYTES);
+    memset(sk, 0, CRYPTO_SECRETKEYBYTES); memset(discard_sk, 0, CRYPTO_SECRETKEYBYTES); if (ots_sk) memset(ots_sk, 0, CRYPTO_SECRETKEYBYTES);
     free(sk); free(discard_sk); free(ots_sk); free(ots_pk); free(ots_sm); free(H); free(message); free(changed);
     for (i = 0; i < NOU; i++) { free(data[i].c); free(data[i].d); free(data[i].h); free(data[i].r0); free(data[i].r1); }
     return 0;
